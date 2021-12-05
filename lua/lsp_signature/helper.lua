@@ -8,7 +8,11 @@ helper.log = function(...)
   local arg = {...}
   local log_path = _LSP_SIG_CFG.log_path or nil
   local str = "שׁ "
-  local lineinfo = ''
+
+  local info = debug.getinfo(2, "Sl")
+  lineinfo = info.short_src .. ":" .. info.currentline
+  str = str .. lineinfo
+
   if _LSP_SIG_CFG.verbose == true then
     local info = debug.getinfo(2, "Sl")
     lineinfo = info.short_src .. ":" .. info.currentline
@@ -302,9 +306,15 @@ helper.cleanup = function(close_float_win)
 
 end
 
-helper.cleanup_async = function(close_float_win, delay)
+helper.cleanup_async = function(close_float_win, delay, check)
+  log(debug.traceback())
   vim.validate {delay = {delay, 'number'}}
   vim.defer_fn(function()
+    if vim.fn.mode() == 'i' and check then
+      log('insert leave ignored')
+      -- still in insert mode debounce
+      return
+    end
     helper.cleanup(close_float_win)
   end, delay * 1000)
 end
@@ -471,7 +481,7 @@ function helper.check_lsp_cap(clients, line_to_cursor)
   local triggered_chars = {}
   local trigger_position = nil
 
-  local tbl_combine = require"lsp_signature_helper".tbl_combine
+  local tbl_combine = require"lsp_signature.helper".tbl_combine
   for _, value in pairs(clients) do
     if value ~= nil then
       local sig_provider = value.server_capabilities.signatureHelpProvider
