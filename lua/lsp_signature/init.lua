@@ -24,11 +24,13 @@ _LSP_SIG_CFG = {
   -- if you want to use lspsaga, please set it to false
   doc_lines = 10, -- how many lines to show in doc, set to 0 if you only want the signature
   max_height = 12, -- max height of signature floating_window
-  max_width = 120, -- max_width of signature floating_window
+  max_width = 80, -- max_width of signature floating_window
 
   floating_window = true, -- show hint in a floating window
   floating_window_above_cur_line = true, -- try to place the floating above the current line
-  floating_window_off_y = 1, -- adjust float windows y position. allow the pum to show a few lines
+
+  floating_window_off_x = 1, -- adjust float windows x position.
+  floating_window_off_y = 1, -- adjust float windows y position.
   close_timeout = 4000, -- close floating window after ms when laster parameter is entered
   fix_pos = function(signatures, _) -- second argument is the client
     return true -- can be expression like : return signatures[1].activeParameter >= 0 and signatures[1].parameters > 1
@@ -40,7 +42,6 @@ _LSP_SIG_CFG = {
   hi_parameter = "LspSignatureActiveParameter",
   handler_opts = { border = "rounded" },
   padding = "", -- character to pad on left and right of signature
-  use_lspsaga = false,
   always_trigger = false, -- sometime show signature on new line can be confusing, set it to false for #58
   -- set this to true if you the triggered_chars failed to work
   -- this will allow lsp server decide show signature or not
@@ -131,12 +132,12 @@ local function virtual_hint(hint, off_y)
 
   helper.cleanup(false) -- cleanup extmark
 
-  local vt = pad .. _LSP_SIG_CFG.hint_prefix .. hint, _LSP_SIG_CFG.hint_scheme
+  local vt = { pad .. _LSP_SIG_CFG.hint_prefix .. hint, _LSP_SIG_CFG.hint_scheme }
 
   log("virtual text: ", cur_line, show_at, vt)
   if r ~= nil then
     vim.api.nvim_buf_set_extmark(0, _LSP_SIG_VT_NS, show_at, 0, {
-      virt_text = { { vt } },
+      virt_text = { vt },
       virt_text_pos = "eol",
       hl_mode = "combine",
       -- hl_group = _LSP_SIG_CFG.hint_scheme
@@ -170,7 +171,7 @@ local signature_handler = helper.mk_handler(function(err, result, ctx, config)
     -- only close if this client opened the signature
     log("no valid signatures", result)
     if _LSP_SIG_CFG.client_id == client_id then
-      helper.cleanup_async(true, 0.1)
+      helper.cleanup_async(true, 0.1, true)
       status_line = { hint = "", label = "" }
 
       -- need to close floating window and virtual text (if they are active)
@@ -235,12 +236,16 @@ local signature_handler = helper.mk_handler(function(err, result, ctx, config)
   status_line.range = { start = s or 0, ["end"] = l or 0 }
 
   -- trim the doc
-  if _LSP_SIG_CFG.doc_lines == 0 then -- doc disabled
+  if _LSP_SIG_CFG.doc_lines == 0 and config.trigger_from_lsp_sig then -- doc disabled
     helper.remove_doc(result)
   end
 
   if _LSP_SIG_CFG.hint_enable == true then
     virtual_hint(hint, 0)
+  else
+    _LSP_SIG_VT_NS = _LSP_SIG_VT_NS or vim.api.nvim_create_namespace("lsp_signature_vt")
+
+    helper.cleanup(false) -- cleanup extmark
   end
   -- I do not need a floating win
   if _LSP_SIG_CFG.floating_window == false and config.toggle ~= true and config.trigger_from_lsp_sig then
@@ -313,8 +318,14 @@ local signature_handler = helper.mk_handler(function(err, result, ctx, config)
     woff = helper.cal_woff(line_to_cursor, label)
   end
 
+  if _LSP_SIG_CFG.floating_window_off_x > 0 then
+    woff = woff + _LSP_SIG_CFG.floating_window_off_x
+  end
+
   -- total lines allowed
-  lines = helper.truncate_doc(lines, num_sigs)
+  if config.trigger_from_lsp_sig then
+    lines = helper.truncate_doc(lines, num_sigs)
+  end
 
   -- log(lines)
   if vim.tbl_isempty(lines) then
@@ -330,11 +341,11 @@ local signature_handler = helper.mk_handler(function(err, result, ctx, config)
   helper.update_config(config)
   config.offset_x = woff
 
-  if type(_LSP_SIG_CFG._fix_pos) == "function" then
+  if type(_LSP_SIG_CFG.fix_pos) == "function" then
     local client = vim.lsp.get_client_by_id(client_id)
-    _LSP_SIG_CFG._fix_pos = _LSP_SIG_CFG._fix_pos(result, client)
+    _LSP_SIG_CFG._fix_pos = _LSP_SIG_CFG.fix_pos(result, client)
   else
-    _LSP_SIG_CFG._fix_pos = _LSP_SIG_CFG._fix_pos or true
+    _LSP_SIG_CFG._fix_pos = _LSP_SIG_CFG.fix_pos or true
   end
 
   -- when should the floating close
@@ -385,7 +396,7 @@ local signature_handler = helper.mk_handler(function(err, result, ctx, config)
     return
   end
 
-  -- log("floating opt", config, display_opts)
+  log("floating opt", config, display_opts)
   if _LSP_SIG_CFG._fix_pos and _LSP_SIG_CFG.bufnr and _LSP_SIG_CFG.winnr then
     if api.nvim_win_is_valid(_LSP_SIG_CFG.winnr) and _LSP_SIG_CFG.label == label and not new_line then
       status_line = { hint = "", label = "" }
@@ -468,7 +479,6 @@ local signature = function()
     -- LuaFormatter on
   else
     -- check if we should close the signature
-    -- print('should close')
     if _LSP_SIG_CFG.winnr and _LSP_SIG_CFG.winnr > 0 then
       -- if check_closer_char(line_to_cursor, triggered_chars) then
       if vim.api.nvim_win_is_valid(_LSP_SIG_CFG.winnr) then
@@ -509,12 +519,12 @@ function M.on_InsertLeave()
     return
   end
 
-  local delay = 0.3 -- 300ms
+  local delay = 0.2 -- 200ms
   vim.defer_fn(function()
     local mode = vim.api.nvim_get_mode().mode
     log("mode:   ", mode)
     if mode == "i" or mode == "s" then
-      log("insert leave ignored")
+      signature()
       -- still in insert mode debounce
       return
     end
@@ -533,34 +543,35 @@ function M.on_InsertLeave()
 end
 
 local start_watch_changes_timer = function()
-  if not manager.timer then
-    manager.changedTick = 0
-    local interval = _LSP_SIG_CFG.timer_interval or 200
-    if manager.timer then
-      manager.timer:stop()
-      manager.timer:close()
-      manager.timer = nil
-    end
-    manager.timer = vim.loop.new_timer()
-    manager.timer:start(
-      100,
-      interval,
-      vim.schedule_wrap(function()
-        local l_changedTick = api.nvim_buf_get_changedtick(0)
-        local m = vim.api.nvim_get_mode().mode
-        -- log(m)
-        if m == "n" or m == "v" then
-          M.on_InsertLeave()
-          return
-        end
-        if l_changedTick ~= manager.changedTick then
-          manager.changedTick = l_changedTick
-          log("changed")
-          signature()
-        end
-      end)
-    )
+  if manager.timer then
+    return
   end
+  manager.changedTick = 0
+  local interval = _LSP_SIG_CFG.timer_interval or 200
+  if manager.timer then
+    manager.timer:stop()
+    manager.timer:close()
+    manager.timer = nil
+  end
+  manager.timer = vim.loop.new_timer()
+  manager.timer:start(
+    100,
+    interval,
+    vim.schedule_wrap(function()
+      local l_changedTick = api.nvim_buf_get_changedtick(0)
+      local m = vim.api.nvim_get_mode().mode
+      -- log(m)
+      if m == "n" or m == "v" then
+        M.on_InsertLeave()
+        return
+      end
+      if l_changedTick ~= manager.changedTick then
+        manager.changedTick = l_changedTick
+        log("changed")
+        signature()
+      end
+    end)
+  )
 end
 
 function M.on_InsertEnter()
@@ -655,7 +666,7 @@ end
 local signature_should_close_handler = helper.mk_handler(function(err, result, ctx, _)
   if err ~= nil then
     print(err)
-    helper.cleanup_async(true, 0.01)
+    helper.cleanup_async(true, 0.01, true)
     status_line = { hint = "", label = "" }
     return
   end
@@ -667,7 +678,7 @@ local signature_should_close_handler = helper.mk_handler(function(err, result, c
   if not valid_result then
     -- only close if this client opened the signature
     if _LSP_SIG_CFG.client_id == client_id then
-      helper.cleanup_async(true, 0.01)
+      helper.cleanup_async(true, 0.01, true)
       status_line = { hint = "", label = "" }
       return
     end
